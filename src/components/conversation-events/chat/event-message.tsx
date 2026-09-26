@@ -19,6 +19,8 @@ import {
   isStreamingDeltaEvent,
   isConversationStateUpdateEvent,
   isGoalConversationStateUpdateEvent,
+  isACPMetadataEvent,
+  isACPCommandResultEvent,
 } from "#/types/agent-server/type-guards";
 import { useConfig } from "#/hooks/query/use-config";
 import { useConversationStore } from "#/stores/conversation-store";
@@ -34,6 +36,8 @@ import { GenericEventMessageWrapper } from "./event-message-components/generic-e
 import { ThoughtEventMessage } from "./event-message-components/thought-event-message";
 import { CollapsibleThinking } from "./event-message-components/collapsible-thinking";
 import { HookExecutionEventMessage } from "./event-message-components/hook-execution-event-message";
+import { ACPMetadataMessage } from "./event-message-components/acp-metadata-message";
+import { ACPCommandResultMessage } from "./event-message-components/acp-command-result-message";
 import { createSkillReadyEvent } from "./event-content-helpers/create-skill-ready-event";
 import { shouldShowPlanPreview } from "./hooks/use-plan-preview-events";
 import { getReasoningContent, splitInlineThink } from "./event-thought-helpers";
@@ -219,6 +223,18 @@ export function EventMessage({
     return (
       <GenericEventMessageWrapper event={event} isLastMessage={isLastMessage} />
     );
+  }
+
+  // ACP per-turn usage metadata (credits, context %) — rendered as a compact
+  // dim chip beneath the turn rather than a full card.
+  if (isACPMetadataEvent(event)) {
+    return <ACPMetadataMessage event={event} />;
+  }
+
+  // ACP slash-command output (/context, /usage, /model, …) — rendered as a
+  // card showing the command and its returned message.
+  if (isACPCommandResultEvent(event)) {
+    return <ACPCommandResultMessage event={event} />;
   }
 
   if (isStreamingDeltaEvent(event)) {

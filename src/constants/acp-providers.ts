@@ -1,4 +1,5 @@
 import { getAcpProvider as getClientAcpProvider } from "@openhands/typescript-client";
+import type { ACPProviderInfo } from "@openhands/typescript-client";
 import { I18nKey } from "#/i18n/declaration";
 
 export type ACPProviderIcon =
@@ -142,10 +143,79 @@ const ACP_PROVIDER_UI: Record<
     icon: "gemini",
     description_key: I18nKey.ONBOARDING$AGENT_GEMINI_CLI_DESCRIPTION,
   },
+  // Kiro CLI's ACP agent (``kiro-cli acp``). No official brand mark is bundled,
+  // so it renders with the generic terminal glyph ({@link
+  // ACP_PROVIDER_FALLBACK_ICON}) until one is added — same treatment a Custom
+  // preset gets, but with a real display name + curated model list below.
+  "kiro-cli": {
+    icon: "cli-generic",
+    description_key: I18nKey.ONBOARDING$AGENT_KIRO_CLI_DESCRIPTION,
+  },
 };
 
+// The pinned ``@openhands/typescript-client`` mirrors an SDK registry that
+// does not yet include Kiro CLI, so ``getClientAcpProvider("kiro-cli")``
+// returns ``null`` — leaving the provider with an empty launch command, no
+// model picker, and no API-key field. Until the SDK registry ships Kiro (and
+// the client is bumped to mirror it), Canvas carries the record locally. The
+// shape mirrors ``ACPProviderInfo`` field-for-field; ``key`` is widened to
+// ``string`` because the client's ``ACPProviderKey`` union is closed and does
+// not yet include ``"kiro-cli"``.
+//
+// Once upstream ships Kiro, ``resolveAcpProviderInfo`` prefers the client
+// record, so this shim self-retires without a separate cleanup pass.
+const KIRO_LOCAL_PROVIDER_INFO: Omit<ACPProviderInfo, "key"> & { key: string } =
+  {
+    key: "kiro-cli",
+    display_name: "Kiro CLI",
+    default_command: ["kiro-cli", "acp"],
+    // KIRO_API_KEY is the documented headless credential. It is the lowest-
+    // priority auth source (an existing ``kiro-cli login`` on the host wins),
+    // which is why the onboarding key field is optional like the other
+    // providers'.
+    api_key_env_var: "KIRO_API_KEY",
+    base_url_env_var: null,
+    default_session_mode: "",
+    agent_name_patterns: ["kiro"],
+    supports_set_session_model: false,
+    supports_runtime_model_switch: false,
+    session_meta_key: null,
+    // Kiro selects the model server-side ("Auto" by default). No curated model
+    // list is published for the ACP surface, so leave the picker empty and let
+    // the server pick; a user can still enter a custom ``acp_model`` override.
+    available_models: [],
+    default_model: null,
+    file_secrets: [],
+    binary_name: "kiro-cli",
+    data_dir_env_var: null,
+  };
+
+// Locally-carried provider records keyed by registry key, consulted only when
+// the pinned client has no entry. Add a key here to unblock a provider Canvas
+// wants to surface before the SDK registry (and the mirrored client) catch up.
+export const ACP_LOCAL_PROVIDER_INFO: Record<
+  string,
+  Omit<ACPProviderInfo, "key"> & { key: string }
+> = {
+  "kiro-cli": KIRO_LOCAL_PROVIDER_INFO,
+};
+
+/**
+ * Resolve a provider's registry record, preferring the upstream client mirror
+ * and falling back to a locally-carried record for providers the pinned client
+ * doesn't know about yet (see {@link ACP_LOCAL_PROVIDER_INFO}). Every Canvas
+ * consumer of the registry goes through this instead of calling
+ * ``getClientAcpProvider`` directly, so a locally-shimmed provider behaves
+ * like a first-class one — and automatically defers to the SDK once it ships.
+ */
+function resolveAcpProviderInfo(
+  key: string,
+): (Omit<ACPProviderInfo, "key"> & { key: string }) | null {
+  return getClientAcpProvider(key) ?? ACP_LOCAL_PROVIDER_INFO[key] ?? null;
+}
+
 function getAvailableModels(key: string): ACPModelOption[] | undefined {
-  return getClientAcpProvider(key)?.available_models?.map((model) => ({
+  return resolveAcpProviderInfo(key)?.available_models?.map((model) => ({
     id: model.id,
     label: model.label,
   }));
@@ -166,7 +236,7 @@ export const SURFACED_ACP_PROVIDERS: readonly string[] =
 export const ACP_PROVIDERS: ACPProviderConfig[] = Object.entries(
   ACP_PROVIDER_UI,
 ).map(([key, ui]) => {
-  const info = getClientAcpProvider(key);
+  const info = resolveAcpProviderInfo(key);
   return {
     key,
     display_name: info?.display_name ?? key,
@@ -376,7 +446,7 @@ export function getAcpProviderSecrets(
   // SDK adds, so reading it directly would offer credential fields for one
   // Canvas never lists.
   if (!getAcpProvider(key)) return [];
-  const info = getClientAcpProvider(key);
+  const info = resolveAcpProviderInfo(key);
   if (!info) return [];
   // Subscription / Vertex credentials first — they're the primary auth path for
   // ACP providers (Claude Pro/Max OAuth token, Codex ChatGPT auth.json), with

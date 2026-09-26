@@ -5,6 +5,7 @@ import { Cpu } from "lucide-react";
 import { AgentStatus } from "#/components/features/controls/agent-status";
 import { ChangeAgentButton } from "../change-agent-button";
 import { ChatInputModel, ChatInputModelMenuContent } from "./chat-input-model";
+import { ChatInputAcpCommands } from "./chat-input-acp-commands";
 import {
   ChatInputLlmProfilePicker,
   ChatInputLlmProfileMenuContent,
@@ -452,6 +453,13 @@ export function ChatInputActions({
               <ChatInputLlmProfilePicker />
             )}
           </div>
+
+          {/* ACP slash-command menu (Kiro /compact, /usage, /model, …). Self-
+              gates to a started ACP conversation that advertises commands, so
+              it renders nothing on non-ACP surfaces. Kept out of the overflow
+              width math: it collapses itself to null when unavailable, so it
+              never competes for inline space on non-ACP conversations. */}
+          <ChatInputAcpCommands />
 
           {hasOverflowItems && (
             <div className="relative shrink-0">

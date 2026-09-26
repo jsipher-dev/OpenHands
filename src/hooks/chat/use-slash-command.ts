@@ -6,6 +6,10 @@ import { useActiveBackend } from "#/contexts/active-backend-context";
 import { useLlmProfiles } from "#/hooks/query/use-llm-profiles";
 import { useFreeModels } from "#/hooks/query/use-free-models";
 import { formatModelNameForDisplay } from "#/utils/format-model-name";
+import { useOptionalConversationId } from "#/hooks/use-conversation-id";
+import { useChatInputModelState } from "#/hooks/use-chat-input-model-state";
+import { useAcpCommands } from "#/hooks/query/use-acp-commands";
+import { useExecuteAcpCommand } from "#/hooks/mutation/use-execute-acp-command";
 
 export type SlashCommandSkill = SkillInfo;
 
@@ -13,6 +17,15 @@ export interface SlashCommandItem {
   skill: SlashCommandSkill;
   /** The slash command string, e.g. "/random-number" */
   command: string;
+  /**
+   * When true, this command is a live ACP server command (e.g. Kiro's
+   * ``/compact``, ``/model``, ``/usage``). Picking it runs the command over
+   * the ACP ``_kiro.dev/commands/execute`` RPC (via {@link useExecuteAcpCommand})
+   * instead of substituting the text and sending it as a prompt — mirroring the
+   * Eclipse reference client, which suppresses the prompt and calls
+   * ``executeCommand`` on pick.
+   */
+  isAcpCommand?: boolean;
 }
 
 type SlashCompletionKind = "command" | "model-profile";
@@ -42,6 +55,19 @@ export const useSlashCommand = (
   const isCloud = useActiveBackend().backend.kind === "cloud";
   const { data: profilesData, isLoading: isProfilesLoading } = useLlmProfiles();
   const freeModels = useFreeModels();
+
+  // Live ACP server commands (Kiro's /compact, /model, /usage, …). Only
+  // populated for a started ACP conversation; empty otherwise so non-ACP
+  // surfaces (every normal OpenHands chat) are unaffected.
+  const { conversationId } = useOptionalConversationId();
+  const { isAcpContext } = useChatInputModelState();
+  const acpEnabled = isAcpContext && Boolean(conversationId);
+  const { data: acpCommands } = useAcpCommands(
+    conversationId ?? null,
+    acpEnabled,
+  );
+  const executeAcpCommand = useExecuteAcpCommand();
+
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [filterText, setFilterText] = useState("");
   const [completionKind, setCompletionKind] =
@@ -55,10 +81,32 @@ export const useSlashCommand = (
   // - Skills with explicit "/" triggers use those triggers
   // - AgentSkills without "/" triggers get a derived "/<name>" command
   const slashItems = useMemo(() => {
-    const items: SlashCommandItem[] = BUILT_IN_COMMANDS.filter((cmd) => {
-      if (cmd.command === "/new") return isCloud;
-      return true;
+    // Live ACP server commands come first so a Kiro command (e.g. /context,
+    // /compact) takes precedence over a same-named workspace skill and is what
+    // the typeahead resolves to. Mirrors the Eclipse reference client, which
+    // lists session.getAvailableCommands() alongside ~/.kiro/skills.
+    const acpItems: SlashCommandItem[] = (acpCommands ?? []).map((cmd) => {
+      const name = cmd.name.startsWith("/") ? cmd.name.slice(1) : cmd.name;
+      return {
+        isAcpCommand: true,
+        command: `/${name}`,
+        skill: {
+          name,
+          type: "agentskills",
+          source: null,
+          content: cmd.description || undefined,
+          triggers: [`/${name}`],
+        },
+      };
     });
+
+    const items: SlashCommandItem[] = [
+      ...acpItems,
+      ...BUILT_IN_COMMANDS.filter((cmd) => {
+        if (cmd.command === "/new") return isCloud;
+        return true;
+      }),
+    ];
 
     // Wait for skills to finish initial load so all commands appear together
     if (isSkillsLoading) return items;
@@ -79,7 +127,7 @@ export const useSlashCommand = (
       }
     });
     return items;
-  }, [skills, isSkillsLoading, isCloud]);
+  }, [acpCommands, skills, isSkillsLoading, isCloud]);
 
   const modelProfileItems = useMemo<SlashCommandItem[]>(() => {
     return (profilesData?.profiles ?? []).map((profile) => {
@@ -105,12 +153,40 @@ export const useSlashCommand = (
       completionKind === "model-profile" ? modelProfileItems : slashItems;
     if (!filterText) return sourceItems;
     const lower = filterText.toLowerCase();
-    return sourceItems.filter(
-      (item) =>
-        item.command.toLowerCase().includes(lower) ||
-        item.skill.name.toLowerCase().includes(lower) ||
-        item.skill.content?.toLowerCase().includes(lower),
-    );
+
+    // A match can occur on the command, the skill name, or the description
+    // (content). Description matches keep unrelated-but-related commands
+    // discoverable, but they must NOT outrank a command whose *name* matches
+    // what was typed. Otherwise typing a full command like "/usage" resolves to
+    // a command whose description merely mentions "usage" (e.g. Kiro's
+    // "/context" — description "…or show usage") because ACP items are
+    // prepended and selectedIndex defaults to 0 → Enter runs the wrong command.
+    //
+    // Rank each match so name matches win over description-only matches:
+    //   0 = command/name is exactly the typed text (best)
+    //   1 = command/name starts with the typed text
+    //   2 = command/name contains the typed text
+    //   3 = only the description contains the typed text (weakest)
+    // Ties preserve source order (stable sort) so the existing
+    // ACP-before-built-ins-before-skills ordering is kept within a rank.
+    const rank = (item: SlashCommandItem): number => {
+      const command = item.command.toLowerCase();
+      const name = item.skill.name.toLowerCase();
+      const slashLower = `/${lower}`;
+      if (command === slashLower || name === lower) return 0;
+      if (command.startsWith(slashLower) || name.startsWith(lower)) return 1;
+      if (command.includes(lower) || name.includes(lower)) return 2;
+      return 3; // description-only match
+    };
+
+    return sourceItems
+      .map((item, index) => ({ item, index, rank: rank(item) }))
+      .filter(
+        ({ item, rank: r }) =>
+          r < 3 || Boolean(item.skill.content?.toLowerCase().includes(lower)),
+      )
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(({ item }) => item);
   }, [completionKind, modelProfileItems, slashItems, filterText]);
 
   // Keep refs in sync so handleSlashKeyDown always reads the latest values,
@@ -216,6 +292,24 @@ export const useSlashCommand = (
       const element = chatInputRef.current;
       if (!element) return;
 
+      // ACP commands (Kiro's /compact, /model, /usage, …) are NOT sent as a
+      // prompt. Mirroring the Eclipse reference client (which sets
+      // skipNextPrompt + clears the input, then calls executeCommand), run the
+      // command over the ACP execute RPC, clear the input, and return without
+      // substituting text so Enter never forwards "/context" as a message.
+      if (item.isAcpCommand && conversationId) {
+        executeAcpCommand.mutate({ conversationId, command: item.command });
+        element.textContent = "";
+        setIsMenuOpen(false);
+        setFilterText("");
+        setCompletionKind("command");
+        setSelectedIndex(0);
+        slashRangeRef.current = null;
+        element.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        element.focus();
+        return;
+      }
+
       const slashRange = slashRangeRef.current;
       const currentText = (element.innerText || "").replace(/[\n\r]+$/, "");
       const replacement = `${item.command} `;
@@ -262,7 +356,7 @@ export const useSlashCommand = (
       // Restore focus so keyboard events (Enter to submit) work after selection
       element.focus();
     },
-    [chatInputRef],
+    [chatInputRef, conversationId, executeAcpCommand],
   );
 
   // Handle keyboard navigation in the menu.

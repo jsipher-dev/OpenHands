@@ -1,5 +1,6 @@
 import React from "react";
 import { OpenHandsEvent } from "#/types/agent-server/core";
+import { isACPMetadataEvent } from "#/types/agent-server/type-guards";
 import { EventMessage } from "./event-message";
 import { usePlanPreviewEvents } from "./hooks/use-plan-preview-events";
 import { groupEvents } from "./group-events";
@@ -17,6 +18,30 @@ interface MessagesProps {
 
 const getLastEventId = (events: OpenHandsEvent[]) => events.at(-1)?.id;
 const getLastEvent = (events: OpenHandsEvent[]) => events.at(-1);
+
+// The memo comparator below keys on array length + the LAST event, which is a
+// cheap and correct signal for the common streaming case (each delta token
+// appends/replaces the trailing event). But it is blind to a change confined to
+// a NON-last element. The per-turn ACP usage chip (ACPMetadataEvent) settles
+// into the MIDDLE of the turn: on settle the final agent MessageEvent becomes
+// the last renderable event while the metadata event lands just before it (it
+// carries an earlier turn-end timestamp, so the store's timestamp sort orders
+// it ahead of the final message). Length and last-event are then unchanged
+// across the settling frames, so the comparator skipped the re-render and the
+// chip never appeared in its settled position — observed live as the chip
+// "vanishing" the moment the turn settled. Fold a stable signature of the
+// metadata events (their ids, in order) into the comparison so their
+// appearance/move forces a render, without re-rendering on every delta token
+// (deltas never touch this signature).
+const metadataSignature = (events: OpenHandsEvent[]): string => {
+  const ids: string[] = [];
+  for (const event of events) {
+    if (isACPMetadataEvent(event) && "id" in event) {
+      ids.push(String(event.id));
+    }
+  }
+  return ids.join("|");
+};
 
 export const Messages: React.FC<MessagesProps> = React.memo(
   ({ messages, allEvents }) => {
@@ -136,7 +161,11 @@ export const Messages: React.FC<MessagesProps> = React.memo(
     getLastEventId(prevProps.allEvents) ===
       getLastEventId(nextProps.allEvents) &&
     getLastEvent(prevProps.messages) === getLastEvent(nextProps.messages) &&
-    getLastEvent(prevProps.allEvents) === getLastEvent(nextProps.allEvents),
+    getLastEvent(prevProps.allEvents) === getLastEvent(nextProps.allEvents) &&
+    // Re-render when the per-turn ACP usage chip appears or moves, even though
+    // it settles into a non-last position (see metadataSignature above).
+    metadataSignature(prevProps.messages) ===
+      metadataSignature(nextProps.messages),
 );
 
 Messages.displayName = "Messages";

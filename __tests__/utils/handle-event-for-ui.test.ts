@@ -1021,4 +1021,44 @@ describe("handleEventForUI", () => {
       expect(result).toEqual([mockMessageEvent, planningDelta, action]);
     });
   });
+
+  describe("ACPMetadataEvent survives turn finalize", () => {
+    const makeAcpMetadata = (id: string): OpenHandsEvent =>
+      ({
+        id,
+        timestamp: Date.now().toString(),
+        source: "agent",
+        kind: "ACPMetadataEvent",
+        credits: 22.06,
+        context_usage_percentage: 37.2,
+        turn_duration_ms: 1034442,
+        provider: "kiro",
+      }) as OpenHandsEvent;
+
+    it("keeps the settled metadata chip when the final agent message finalizes streamed deltas", () => {
+      // Turn shape: user msg -> streamed delta -> settled ACPMetadataEvent ->
+      // final agent MessageEvent (which finalizes/supersedes the delta). The
+      // metadata chip must remain (it was observed vanishing on turn-settle).
+      const userMsg: MessageEvent = {
+        ...mockMessageEvent,
+        id: "user-1",
+        source: "user",
+      };
+      const delta = makeStreamingDelta("delta-1", "Working on it. Done.");
+      const metadata = makeAcpMetadata("acp-meta-1");
+
+      let ui: OpenHandsEvent[] = [];
+      for (const e of [userMsg, delta, metadata, mockAgentMessageEvent]) {
+        ui = handleEventForUI(e, ui);
+      }
+
+      expect(ui.some((e) => "kind" in e && e.kind === "ACPMetadataEvent")).toBe(
+        true,
+      );
+      // And the streamed delta was still superseded by the final message.
+      expect(
+        ui.some((e) => "id" in e && e.id === mockAgentMessageEvent.id),
+      ).toBe(true);
+    });
+  });
 });

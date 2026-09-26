@@ -1,4 +1,6 @@
 // Export all event types
+export * from "./acp-command-result-event";
+export * from "./acp-metadata-event";
 export * from "./acp-tool-call-event";
 export * from "./action-event";
 export * from "./condensation-event";

@@ -39,6 +39,7 @@ import { LlmNotConfiguredBanner } from "#/components/features/home/llm-not-confi
 import { useLlmConfigured } from "#/hooks/use-llm-configured";
 import { Messages } from "#/components/conversation-events/chat/messages";
 import { PendingUserMessages } from "./pending-user-messages";
+import { LatestACPUsage } from "./latest-acp-usage";
 import { useUnifiedUploadFiles } from "#/hooks/mutation/use-unified-upload-files";
 import { validateFiles } from "#/utils/file-validation";
 import { useConversationStore } from "#/stores/conversation-store";
@@ -591,6 +592,11 @@ export function ChatInterface() {
             double-renders alongside the real event list.
           */}
             <PendingUserMessages />
+
+            {/* Per-turn ACP usage chip (credits/context%/duration), pinned at
+              the end of the flow and read from the store so it survives
+              turn-settle regardless of the settled event's list position. */}
+            <LatestACPUsage />
 
             {/* Goal-loop status sits at the end of the message flow — above the
               composer and its typing indicator — so progress stays in view. */}

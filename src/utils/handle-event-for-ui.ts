@@ -10,6 +10,7 @@ import {
   isMessageEvent,
   isObservationEvent,
   isStreamingDeltaEvent,
+  isACPMetadataEvent,
 } from "#/types/agent-server/type-guards";
 import { StreamingDeltaEvent } from "#/types/agent-server/core/events/streaming-delta-event";
 import {
@@ -222,6 +223,32 @@ const eventRendersReasoning = (event: OpenHandsEvent): boolean => {
   return false;
 };
 
+// A rebuild of the UI event array (the finalize/supersede path) must never
+// silently drop an ACPMetadataEvent. The per-turn Kiro usage chip
+// (credits/context%/duration) is a low-frequency, non-groupable event that
+// arrives near turn-end, exactly when finalizeStreamingDeltasInPlace rebuilds
+// the array. The current supersede logic only strips streaming deltas, so it
+// preserves metadata — but this makes that an explicit, test-guarded invariant
+// so a future change to the rebuild can't regress the chip (which was observed
+// to vanish on turn-settle). Re-appends any metadata event that was in `before`
+// but is missing from `after`, preserving order by its original position.
+const preserveMetadataEvents = (
+  before: OpenHandsEvent[],
+  after: OpenHandsEvent[],
+): OpenHandsEvent[] => {
+  const afterIds = new Set(
+    after.map((event) => ("id" in event ? event.id : undefined)),
+  );
+  const dropped = before.filter(
+    (event) =>
+      isACPMetadataEvent(event) && "id" in event && !afterIds.has(event.id),
+  );
+  if (dropped.length === 0) {
+    return after;
+  }
+  return [...after, ...dropped];
+};
+
 // The final MessageEvent/FinishAction is authoritative for the turn's text. Drop
 // the provisional streamed deltas and render the canonical final event instead,
 // so the message is rendered exactly once (never holey or duplicated) and its
@@ -246,7 +273,8 @@ const finalizeStreamingDeltasInPlace = (
     eventRendersReasoning(finalEvent),
   );
   nextUiEvents.push(finalEvent);
-  return nextUiEvents;
+  // Invariant: a settled ACP usage chip present before the rebuild survives it.
+  return preserveMetadataEvents(uiEvents, nextUiEvents);
 };
 
 /**

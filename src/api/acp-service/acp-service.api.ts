@@ -65,6 +65,32 @@ function classifyGemini(out: BashOutput): AcpAuthStatus {
   return "unknown";
 }
 
+// Kiro CLI: ``kiro-cli whoami --format json`` prints {"username": …,
+// "status": "active"} when signed in and errors with "Not logged in" when not.
+// Read the JSON status (the exit code isn't relied on), matching "not logged
+// in" in either stream first. Anything unparseable (CLI missing, unexpected
+// output) ⇒ unknown so onboarding shows the API-key field.
+//
+// NB: an existing ``kiro-cli login`` outranks ``KIRO_API_KEY`` at runtime, and
+// ``whoami`` reports only the login — so with just an API key set this can read
+// "not logged in" even though chat works. That's why the key field stays
+// optional and an "unknown"/"unauthenticated" result never blocks the flow.
+function classifyKiro(out: BashOutput): AcpAuthStatus {
+  const text = streams(out).toLowerCase();
+  if (text.includes("not logged in")) return "unauthenticated";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse((out.stdout ?? "").trim());
+  } catch {
+    return "unknown";
+  }
+  const record = parsed as { status?: unknown; username?: unknown } | null;
+  if (record?.status === "active" || typeof record?.username === "string") {
+    return "authenticated";
+  }
+  return "unknown";
+}
+
 // Per-provider login detection, keyed by ``acp_server`` / OnboardingAgentId.
 // Providers absent here (OpenHands, custom, unknown) report ``unknown``.
 const ACP_AUTH_PROBES: Record<string, AcpAuthProbe> = {
@@ -80,6 +106,10 @@ const ACP_AUTH_PROBES: Record<string, AcpAuthProbe> = {
     command:
       'test -f "$HOME/.gemini/oauth_creds.json" && echo present || echo absent',
     classify: classifyGemini,
+  },
+  "kiro-cli": {
+    command: "kiro-cli whoami --format json",
+    classify: classifyKiro,
   },
 };
 

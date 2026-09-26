@@ -127,4 +127,37 @@ describe("AcpService.getAuthStatus", () => {
     );
     expect(executeCommand).not.toHaveBeenCalled();
   });
+
+  describe("kiro-cli (kiro-cli whoami --format json)", () => {
+    it("→ authenticated when whoami reports an active status", async () => {
+      executeCommand.mockResolvedValue(
+        bashOutput({
+          stdout:
+            '{"username":"jane.doe","auth_method":"builder_id","status":"active"}',
+        }),
+      );
+      await expect(AcpService.getAuthStatus("kiro-cli")).resolves.toBe(
+        "authenticated",
+      );
+      expect(executeCommand.mock.calls[0][0]).toContain("whoami");
+    });
+
+    it('→ unauthenticated when whoami says "Not logged in"', async () => {
+      executeCommand.mockResolvedValue(
+        bashOutput({ stderr: "Not logged in", exit_code: 1 }),
+      );
+      await expect(AcpService.getAuthStatus("kiro-cli")).resolves.toBe(
+        "unauthenticated",
+      );
+    });
+
+    it("→ unknown when the CLI is missing / output is unparseable", async () => {
+      executeCommand.mockResolvedValue(
+        bashOutput({ stderr: "kiro-cli: command not found", exit_code: 127 }),
+      );
+      await expect(AcpService.getAuthStatus("kiro-cli")).resolves.toBe(
+        "unknown",
+      );
+    });
+  });
 });

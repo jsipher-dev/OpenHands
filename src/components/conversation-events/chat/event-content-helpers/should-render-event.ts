@@ -9,6 +9,8 @@ import {
   isGoalConversationStateUpdateEvent,
   isHookExecutionEvent,
   isACPToolCallEvent,
+  isACPMetadataEvent,
+  isACPCommandResultEvent,
   isStreamingDeltaEvent,
 } from "#/types/agent-server/type-guards";
 
@@ -133,6 +135,20 @@ export const shouldRenderEvent = (event: OpenHandsEvent) => {
   // ``ToolCallProgress``, which flashed half-formed cards mid-stream; that
   // fan-out is gone, so the running card is now a single clean event.
   if (isACPToolCallEvent(event)) {
+    return true;
+  }
+
+  // ACP per-turn usage metadata (credits, context %) is NOT rendered in-stream.
+  // It settles mid-turn and can be buried deep in a long turn; rendering it in
+  // its list position made it fragile across reconcile/memo/tail-refetch and it
+  // vanished on settle. It is now rendered once, pinned at the end of the
+  // message flow, by <LatestACPUsage> reading the latest event from the store.
+  if (isACPMetadataEvent(event)) {
+    return false;
+  }
+
+  // ACP slash-command output (/context, /usage, …) renders as a result card.
+  if (isACPCommandResultEvent(event)) {
     return true;
   }
 

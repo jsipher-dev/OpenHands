@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getAcpProvider as getClientAcpProvider } from "@openhands/typescript-client";
 import {
   ACP_CUSTOM_PRESET_KEY,
+  ACP_LOCAL_PROVIDER_INFO,
   ACP_PROVIDERS,
   ACP_VERTEX_SAFE_MODEL,
   buildAcpAgentSettingsDiff,
@@ -46,23 +47,55 @@ describe("ACP provider registry", () => {
     // straight from @openhands/typescript-client's getAcpProvider(), so the
     // Python SDK stays the single source of truth. Only the UI-only overlay
     // (icon + description_key) is layered on locally.
+    //
+    // Exception: providers the pinned client doesn't mirror yet are carried in
+    // ACP_LOCAL_PROVIDER_INFO until the SDK ships them (see the dedicated
+    // "locally-shimmed provider" cases below). This invariant covers the
+    // SDK-sourced providers.
     for (const provider of ACP_PROVIDERS) {
       const sdk = getClientAcpProvider(provider.key);
-      expect(sdk, provider.key).not.toBeNull();
-      expect(provider.display_name).toBe(sdk!.display_name);
-      expect(provider.default_command).toEqual([...sdk!.default_command]);
+      if (sdk === null) {
+        // Locally-shimmed provider (e.g. Kiro CLI). Its data legitimately does
+        // not come from the client; asserted separately.
+        expect(provider.key in ACP_LOCAL_PROVIDER_INFO, provider.key).toBe(
+          true,
+        );
+        continue;
+      }
+      expect(provider.display_name).toBe(sdk.display_name);
+      expect(provider.default_command).toEqual([...sdk.default_command]);
       expect(provider.available_models).toEqual(
-        sdk!.available_models.map((m) => ({ id: m.id, label: m.label })),
+        sdk.available_models.map((m) => ({ id: m.id, label: m.label })),
       );
-      expect(provider.default_model).toBe(sdk!.default_model ?? undefined);
+      expect(provider.default_model).toBe(sdk.default_model ?? undefined);
       // UI-only overlay stays local.
       expect(provider.icon).toBeTruthy();
       expect(provider.description_key).toBeTruthy();
     }
   });
 
+  it("carries locally-shimmed providers with a real command until the SDK ships them", () => {
+    // The failure mode a client-only lookup used to hit: an unknown key
+    // resolves to an empty default_command that spawns nothing. Every locally
+    // carried provider must supply a real launch command + display name.
+    for (const key of Object.keys(ACP_LOCAL_PROVIDER_INFO)) {
+      const provider = ACP_PROVIDERS.find((p) => p.key === key);
+      expect(provider, key).toBeTruthy();
+      expect(provider!.display_name).toBeTruthy();
+      expect(provider!.default_command.length, key).toBeGreaterThan(0);
+    }
+    // The specific record for the current shim.
+    const kiro = ACP_PROVIDERS.find((p) => p.key === "kiro-cli");
+    expect(kiro?.default_command).toEqual(["kiro-cli", "acp"]);
+  });
+
   it("keeps every built-in default model in the UX suggestions", () => {
     for (const provider of ACP_PROVIDERS) {
+      // Locally-shimmed providers may defer model choice to the server (no
+      // curated picker / preselected model) — Kiro's "Auto" is server-side.
+      if (provider.key in ACP_LOCAL_PROVIDER_INFO) {
+        continue;
+      }
       expect(provider.default_model, provider.key).toBeTruthy();
       expect(provider.available_models, provider.key).toBeTruthy();
       expect(

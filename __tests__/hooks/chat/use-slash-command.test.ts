@@ -54,6 +54,33 @@ vi.mock("#/hooks/query/use-active-conversation", () => ({
   useActiveConversation: () => mockConversation,
 }));
 
+// ACP wiring: default to "not an ACP conversation" so the existing
+// (non-ACP) tests are unaffected. The ACP-specific tests below flip these.
+const mockAcp = vi.hoisted(() => ({
+  isAcpContext: false,
+  conversationId: null as string | null,
+  commands: [] as Array<{ name: string; description: string }>,
+  executeMutate: vi.fn(),
+}));
+
+vi.mock("#/hooks/use-conversation-id", () => ({
+  useOptionalConversationId: () => ({ conversationId: mockAcp.conversationId }),
+}));
+
+vi.mock("#/hooks/use-chat-input-model-state", () => ({
+  useChatInputModelState: () => ({ isAcpContext: mockAcp.isAcpContext }),
+}));
+
+vi.mock("#/hooks/query/use-acp-commands", () => ({
+  useAcpCommands: (_conversationId: string | null, enabled: boolean) => ({
+    data: enabled ? mockAcp.commands : [],
+  }),
+}));
+
+vi.mock("#/hooks/mutation/use-execute-acp-command", () => ({
+  useExecuteAcpCommand: () => ({ mutate: mockAcp.executeMutate }),
+}));
+
 function makeSkill(
   name: string,
   triggers: string[] = [],
@@ -139,6 +166,10 @@ describe("useSlashCommand", () => {
     mockLlmProfiles.data = undefined;
     mockLlmProfiles.isLoading = false;
     mockConversation.data = undefined;
+    mockAcp.isAcpContext = false;
+    mockAcp.conversationId = null;
+    mockAcp.commands = [];
+    mockAcp.executeMutate = vi.fn();
     document.body.innerHTML = "";
     window.localStorage.clear?.();
     __resetActiveStoreForTests();
@@ -851,5 +882,140 @@ describe("useSlashCommand", () => {
     act(() => result.current.closeMenu());
 
     expect(result.current.isMenuOpen).toBe(false);
+  });
+
+  it("merges live ACP commands into the slash menu ahead of built-ins", () => {
+    // Arrange — a started ACP conversation advertising /context and /compact.
+    mockAcp.isAcpContext = true;
+    mockAcp.conversationId = "conv-1";
+    mockAcp.commands = [
+      { name: "context", description: "Manage context files or show usage" },
+      { name: "compact", description: "Compact the conversation" },
+    ];
+    mockSkills.data = [];
+    mockConversation.data = { conversation_version: "V1" };
+
+    // Act
+    const ref = makeChatInputRef();
+    const { result } = renderHook(() => useSlashCommand(ref));
+
+    // Assert — ACP commands appear, come first, and are flagged as ACP.
+    const commands = result.current.filteredItems.map((i) => i.command);
+    expect(commands.slice(0, 2)).toEqual(["/context", "/compact"]);
+    const contextItem = result.current.filteredItems.find(
+      (i) => i.command === "/context",
+    );
+    expect(contextItem?.isAcpCommand).toBe(true);
+  });
+
+  it("filters to the ACP command instead of a same-named skill for /context", () => {
+    // Arrange — /context is a real Kiro command; there must be no snap to an
+    // unrelated skill like /agent-creator.
+    mockAcp.isAcpContext = true;
+    mockAcp.conversationId = "conv-1";
+    mockAcp.commands = [
+      { name: "context", description: "Manage context files or show usage" },
+    ];
+    mockSkills.data = [makeSkill("agent-creator", ["/agent-creator"])];
+    mockConversation.data = { conversation_version: "V1" };
+
+    const ref = makeChatInputRef();
+    setInputText(ref.current, "/context");
+
+    const { result } = renderHook(() => useSlashCommand(ref));
+    act(() => result.current.updateSlashMenu());
+
+    const commands = result.current.filteredItems.map((i) => i.command);
+    expect(commands).toContain("/context");
+    expect(commands).not.toContain("/agent-creator");
+    expect(result.current.filteredItems[0].command).toBe("/context");
+  });
+
+  it("ranks an exact command-name match ahead of a description-only match", () => {
+    // Regression: typing "/usage" used to resolve to "/context" because the
+    // ACP /context command's description ("…or show usage") matched the filter
+    // and, being prepended, sat at index 0 (selectedIndex defaults to 0 → Enter
+    // ran /context). The exact-name match /usage must now be first.
+    mockAcp.isAcpContext = true;
+    mockAcp.conversationId = "conv-1";
+    mockAcp.commands = [
+      { name: "context", description: "Manage context files or show usage" },
+      { name: "usage", description: "Show monthly credit usage" },
+      { name: "compact", description: "Compact the conversation" },
+    ];
+    mockSkills.data = [];
+    mockConversation.data = { conversation_version: "V1" };
+
+    const ref = makeChatInputRef();
+    setInputText(ref.current, "/usage");
+
+    const { result } = renderHook(() => useSlashCommand(ref));
+    act(() => result.current.updateSlashMenu());
+
+    const commands = result.current.filteredItems.map((i) => i.command);
+    // /usage is first (exact name match); /context still appears (description
+    // match) but ranks below it, so Enter on the default selection runs /usage.
+    expect(commands[0]).toBe("/usage");
+    expect(commands).toContain("/context");
+  });
+
+  it("runs an ACP command via the execute RPC and does not insert text", () => {
+    // Arrange
+    mockAcp.isAcpContext = true;
+    mockAcp.conversationId = "conv-1";
+    mockAcp.commands = [
+      { name: "compact", description: "Compact the conversation" },
+    ];
+    mockSkills.data = [];
+    mockConversation.data = { conversation_version: "V1" };
+
+    const ref = makeChatInputRef();
+    setInputText(ref.current, "/compact");
+    const { result } = renderHook(() => useSlashCommand(ref));
+
+    const item = {
+      isAcpCommand: true,
+      command: "/compact",
+      skill: {
+        name: "compact",
+        type: "agentskills" as const,
+        source: null,
+        content: "Compact the conversation",
+        triggers: ["/compact"],
+      },
+    };
+
+    // Act
+    act(() => result.current.selectItem(item));
+
+    // Assert — executed over the RPC, input cleared, nothing substituted.
+    expect(mockAcp.executeMutate).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      command: "/compact",
+    });
+    expect(ref.current.textContent).toBe("");
+    expect(result.current.isMenuOpen).toBe(false);
+  });
+
+  it("still substitutes text for a non-ACP skill command", () => {
+    // Arrange — no ACP context; picking a skill keeps the existing behavior.
+    mockSkills.data = [makeSkill("code-search", ["/code-search"])];
+    mockConversation.data = { conversation_version: "V1" };
+
+    const ref = makeChatInputRef();
+    setInputText(ref.current, "/code-search");
+    const { result } = renderHook(() => useSlashCommand(ref));
+    act(() => result.current.updateSlashMenu());
+
+    const item = result.current.filteredItems.find(
+      (i) => i.command === "/code-search",
+    )!;
+
+    // Act
+    act(() => result.current.selectItem(item));
+
+    // Assert — text substituted (not executed), mutation never called.
+    expect(mockAcp.executeMutate).not.toHaveBeenCalled();
+    expect(ref.current.textContent).toContain("/code-search");
   });
 });

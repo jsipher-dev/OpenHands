@@ -5,9 +5,12 @@ import {
   ActionEvent,
   MessageEvent,
   ObservationEvent,
+  OpenHandsEvent,
   SecurityRisk,
 } from "#/types/agent-server/core";
 import { StreamingDeltaEvent } from "#/types/agent-server/core/events/streaming-delta-event";
+import { ACPMetadataEvent } from "#/types/agent-server/core/events/acp-metadata-event";
+import { shouldRenderEvent } from "#/components/conversation-events/chat/event-content-helpers/should-render-event";
 
 const mockUserMessageEvent: MessageEvent = {
   id: "test-event-1",
@@ -279,5 +282,104 @@ describe("useEventStore", () => {
     // Verify events were cleared
     expect(result.current.events).toEqual([]);
     expect(result.current.uiEvents).toEqual([]);
+  });
+});
+
+describe("ACPMetadataEvent survives a live turn settle (store integration)", () => {
+  // Reproduces the disappear-on-settle symptom seen live (screenshots
+  // 2026-09-20 17:32/17:33): the credits/context chip renders during the turn,
+  // then vanishes the moment the turn settles. This drives the exact WS event
+  // order through the real store (addEvent) plus the settle-time REST refetch
+  // (addEvents with a TIMESTAMP_DESC tail page), then asserts the metadata
+  // event is still present in uiEvents AND passes shouldRenderEvent — i.e. the
+  // store/reducer/filter layers keep it. If this stays green, the drop is a
+  // pure render/memo layer effect (Messages' custom memo comparator), not a
+  // store loss — which is the remaining live-only hypothesis.
+  const acpMetadata: ACPMetadataEvent = {
+    id: "acp-meta-1",
+    // Slightly BEFORE the final message: Kiro emits the settled _kiro.dev/
+    // metadata frame at turn end, and the final agent message can carry an
+    // equal-or-later timestamp — so the store's timestamp re-sort may reorder
+    // them. Use a value that forces that reorder.
+    timestamp: "2024-03-01T00:00:08Z",
+    source: "agent",
+    kind: "ACPMetadataEvent",
+    credits: 2.6,
+    context_usage_percentage: 10,
+    turn_duration_ms: 79000,
+    provider: "Kiro CLI Agent",
+  };
+
+  const finalAgentMessage: MessageEvent = {
+    id: "agent-final-1",
+    timestamp: "2024-03-01T00:00:09Z",
+    source: "agent",
+    llm_message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Hello" }],
+    },
+    activated_skills: [],
+    extended_content: [],
+  };
+
+  const findMeta = (events: OpenHandsEvent[]) =>
+    events.filter((e) => "kind" in e && e.kind === "ACPMetadataEvent");
+
+  it("keeps the metadata event through streaming finalize (WS order)", () => {
+    const { result } = renderHook(() => useEventStore());
+    act(() => {
+      result.current.clearEvents();
+      // 1) user message, 2) streamed delta, 3) settled ACP metadata (arrives
+      // before the final message), 4) final agent message (finalizes deltas).
+      result.current.addEvent(
+        makeUserMessageEvent("u1", "2024-03-01T00:00:00Z"),
+      );
+      result.current.addEvent(makeStreamingDeltaEvent("d1", "Hello"));
+      result.current.addEvent(acpMetadata);
+      result.current.addEvent(finalAgentMessage);
+    });
+
+    expect(findMeta(result.current.uiEvents)).toHaveLength(1);
+    expect(
+      findMeta(result.current.uiEvents.filter(shouldRenderEvent)),
+    ).toHaveLength(1);
+    // Ground-truth ordering after finalize + timestamp sort: the metadata chip
+    // (ts 00:00:08) sorts BEFORE the final agent message (ts 00:00:09), so it is
+    // NOT the last renderable event — the final message is. This is what the
+    // Messages memo comparator keys on.
+    const rendered = result.current.uiEvents.filter(shouldRenderEvent);
+    expect(
+      rendered.map((e) => ("kind" in e ? e.kind : "MessageEvent")),
+    ).toEqual(["MessageEvent", "ACPMetadataEvent", "MessageEvent"]);
+  });
+
+  it("keeps the metadata event after a settle-time REST refetch that omits it", () => {
+    const { result } = renderHook(() => useEventStore());
+    act(() => {
+      result.current.clearEvents();
+      result.current.addEvent(
+        makeUserMessageEvent("u1", "2024-03-01T00:00:00Z"),
+      );
+      result.current.addEvent(makeStreamingDeltaEvent("d1", "Hello"));
+      result.current.addEvent(acpMetadata);
+      result.current.addEvent(finalAgentMessage);
+    });
+    expect(findMeta(result.current.uiEvents)).toHaveLength(1);
+
+    // Settle-time refetch (useConversationHistory, TIMESTAMP_DESC limit:50,
+    // reversed to chronological). Simulate a tail page whose window does NOT
+    // include the metadata event (e.g. it fell outside the newest 50). addEvents
+    // must MERGE (never replace), so the metadata event survives.
+    act(() => {
+      result.current.addEvents([
+        makeUserMessageEvent("u1", "2024-03-01T00:00:00Z"),
+        finalAgentMessage,
+      ]);
+    });
+
+    expect(findMeta(result.current.uiEvents)).toHaveLength(1);
+    expect(
+      findMeta(result.current.uiEvents.filter(shouldRenderEvent)),
+    ).toHaveLength(1);
   });
 });

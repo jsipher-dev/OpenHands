@@ -9,6 +9,7 @@ import {
   FileClient,
   ProfilesClient,
   VSCodeClient,
+  AgentServerClient,
 } from "@openhands/typescript-client/clients";
 import { v4 as uuidv4 } from "uuid";
 import { AgentKind, Provider } from "#/types/settings";
@@ -379,6 +380,12 @@ function requireAppConversation(
 /**
  * Options for {@link AgentServerConversationService.createConversation}.
  */
+export interface AcpCommand {
+  name: string;
+  description: string;
+  input?: { hint?: string } | null;
+}
+
 export interface CreateConversationOptions {
   initialUserMsg?: string;
   conversationInstructions?: string;
@@ -1161,6 +1168,56 @@ class AgentServerConversationService {
       conversationId,
       model,
     );
+  }
+
+  /**
+   * ACP slash-command definition advertised by the ACP server (e.g. Kiro's
+   * ``/compact``, ``/usage``, ``/model``). Raw shape from the
+   * ``_kiro.dev/commands/available`` notification.
+   */
+  static async listAcpCommands(conversationId: string): Promise<AcpCommand[]> {
+    const { backend } = getActiveBackend();
+    if (backend.kind === "cloud") {
+      return callCloudProxy<AcpCommand[]>({
+        backend,
+        method: "GET",
+        path: `/api/v1/app-conversations/${conversationId}/acp_commands`,
+      });
+    }
+    // The pinned typescript-client does not expose this endpoint yet, so call
+    // it via the generic AgentServerClient.get (mirrors switchAcpModel's
+    // ConversationClient path until the client ships a typed method).
+    return new AgentServerClient(getAgentServerClientOptions()).get<
+      AcpCommand[]
+    >(`/api/conversations/${conversationId}/acp_commands`);
+  }
+
+  /**
+   * Execute an ACP slash-command on the live session (POST
+   * /execute_acp_command). ``command`` is the command name (with or without a
+   * leading slash). Returns the server's ``success`` flag.
+   */
+  static async executeAcpCommand(
+    conversationId: string,
+    command: string,
+  ): Promise<boolean> {
+    const { backend } = getActiveBackend();
+    if (backend.kind === "cloud") {
+      const result = await callCloudProxy<{ success: boolean }>({
+        backend,
+        method: "POST",
+        path: `/api/v1/app-conversations/${conversationId}/execute_acp_command`,
+        body: { command },
+      });
+      return result.success;
+    }
+    const result = await new AgentServerClient(
+      getAgentServerClientOptions(),
+    ).post<{ success: boolean }>(
+      `/api/conversations/${conversationId}/execute_acp_command`,
+      { command },
+    );
+    return result.success;
   }
 }
 

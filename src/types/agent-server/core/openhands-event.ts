@@ -1,6 +1,8 @@
 // Import all event types
 import {
+  ACPCommandResultEvent,
   ACPToolCallEvent,
+  ACPMetadataEvent,
   ActionEvent,
   MessageEvent,
   ObservationEvent,
@@ -32,6 +34,10 @@ export type OpenHandsEvent =
   | SystemPromptEvent
   // ACP sub-agent tool call events
   | ACPToolCallEvent
+  // ACP per-turn usage metadata (credits, context %)
+  | ACPMetadataEvent
+  // ACP slash-command output (/context, /usage, /model, …)
+  | ACPCommandResultEvent
   // Hook events
   | HookExecutionEvent
   // Conversation management events

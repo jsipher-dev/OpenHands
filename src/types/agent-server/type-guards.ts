@@ -33,6 +33,8 @@ import {
 } from "./core/events/conversation-state-event";
 import { HookExecutionEvent } from "./core/events/hook-execution-event";
 import { ACPToolCallEvent } from "./core/events/acp-tool-call-event";
+import { ACPMetadataEvent } from "./core/events/acp-metadata-event";
+import { ACPCommandResultEvent } from "./core/events/acp-command-result-event";
 import { StreamingDeltaEvent } from "./core/events/streaming-delta-event";
 import { SystemPromptEvent } from "./core/events/system-event";
 import { CondensationEvent } from "./core/events/condensation-event";
@@ -274,6 +276,16 @@ export const isACPToolCallEvent = (
   event: OpenHandsEvent,
 ): event is ACPToolCallEvent =>
   "kind" in event && event.kind === "ACPToolCallEvent";
+
+export const isACPMetadataEvent = (
+  event: OpenHandsEvent,
+): event is ACPMetadataEvent =>
+  "kind" in event && event.kind === "ACPMetadataEvent";
+
+export const isACPCommandResultEvent = (
+  event: OpenHandsEvent,
+): event is ACPCommandResultEvent =>
+  "kind" in event && event.kind === "ACPCommandResultEvent";
 
 export const isStreamingDeltaEvent = (
   event: OpenHandsEvent,
