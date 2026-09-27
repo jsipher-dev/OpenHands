@@ -188,6 +188,10 @@ const KIRO_LOCAL_PROVIDER_INFO: Omit<ACPProviderInfo, "key"> & { key: string } =
     file_secrets: [],
     binary_name: "kiro-cli",
     data_dir_env_var: null,
+    // Kiro has no documented credential pair that must not coexist. The field
+    // is required by the client registry shape; an empty list means nothing
+    // is stripped from the subprocess environment.
+    env_conflicts: [],
   };
 
 // Locally-carried provider records keyed by registry key, consulted only when
